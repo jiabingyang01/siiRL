@@ -36,7 +36,9 @@ git config --global --add safe.directory /DATA/disk1/yjb/projects/VLA/siiRL
 pip config set global.index-url https://pypi.mirrors.ustc.edu.cn/simple/
 SETUPTOOLS_SCM_PRETEND_VERSION=0.1.0 pip install -e .
 pip install numpy==1.26.4
-pip install transformers==4.51.0
+pip uninstall transformers -y
+pip install "transformers @ git+https://github.com/moojink/transformers-openvla-oft.git"
+
 # flash_attn 预编译版本和 torch 2.10+cu128 不匹配，需从源码编译（15-20 分钟）
 pip uninstall flash-attn -y
 pip install flash-attn --no-build-isolation --no-cache-dir
