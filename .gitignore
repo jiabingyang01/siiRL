@@ -130,8 +130,12 @@ tensorboard/
 # version file
 siirl/_version.py
 
-models
+/models/
 
-vjepa2/
+/vjepa2/
 
+# local per-server scripts — never synced via git
 docs/RUN_GUIDE_SRPO_LWM.md
+tb.sh
+examples/embodied_srpo_trainer/run_openvla_oft_libero_*.sh
+examples/lwm_reward_trainer/run_lwm_libero_*.sh
