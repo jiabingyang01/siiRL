@@ -50,6 +50,10 @@ class Sample(BaseModel):
     complete: Optional[np.ndarray] = Field(default=None)
     task_file_name: Optional[np.ndarray] = Field(default=None)
     vjepa_embedding: Optional[np.ndarray] = Field(default=None)
+    # used for LWM-Reward (step-level dense reward)
+    lwm_step_embeddings: Optional[np.ndarray] = Field(default=None)
+    lwm_step_actions: Optional[np.ndarray] = Field(default=None)
+    lwm_goal_embeddings: Optional[np.ndarray] = Field(default=None)
     
     # from  non_tensor_batch of Dataproto
     raw_prompt: str = Field(default="")
@@ -168,6 +172,9 @@ def Dict2Samples(data:TensorDict)-> List[SampleManager]:
         local_sample.complete = data['complete'][index].numpy() if 'complete' in data else None
         local_sample.task_file_name = data['task_file_name'][index].numpy() if 'task_file_name' in data else None
         local_sample.vjepa_embedding = data['vjepa_embedding'][index].numpy() if 'vjepa_embedding' in data else None
+        local_sample.lwm_step_embeddings = data['lwm_step_embeddings'][index].numpy() if 'lwm_step_embeddings' in data else None
+        local_sample.lwm_step_actions = data['lwm_step_actions'][index].numpy() if 'lwm_step_actions' in data else None
+        local_sample.lwm_goal_embeddings = data['lwm_goal_embeddings'][index].numpy() if 'lwm_goal_embeddings' in data else None
         if 'multi_modal_inputs' in data:
             local_sample.multi_modal_inputs = data["multi_modal_inputs"][index]
         local_sample.uid = data['uid'][index]

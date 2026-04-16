@@ -481,11 +481,11 @@ class EmbodiedHFRollout(BaseRollout):
                 # --- 1. Per-step clip embeddings via V-JEPA 2 ---
                 step_embeddings = np.zeros((chunk_size, num_vla_steps, embed_dim), dtype=np.float32)
 
-                # Collect (env_idx, step_idx, clip_frames) for batch encoding
-                # Use CUMULATIVE sliding window: for step t, use all frames from
-                # the start up to the current step. This avoids the 8-frame padding
-                # problem and matches the approach used in SRPO Appendix B for
-                # reward quality evaluation.
+                # Clip window strategy (controlled by lwm_clip_window):
+                #   0  -> cumulative window (all frames from start, quality best but slow)
+                #   K>0 -> fixed window (last K VLA steps = K*action_chunks_len frames, fast)
+                clip_window = int(getattr(self.config.embodied, 'lwm_clip_window', 4))
+
                 all_clips = []
                 for env_idx in range(chunk_size):
                     task_name = task_records[env_idx]['task_file_name']
@@ -495,8 +495,13 @@ class EmbodiedHFRollout(BaseRollout):
                     init_n = max(1, len(frames) - n_steps * action_chunks_len) if n_steps > 0 else len(frames)
                     for t in range(n_steps):
                         end_idx = min(init_n + (t + 1) * action_chunks_len, len(frames))
-                        # Cumulative: take all frames from start to current step
-                        clip_frames = frames[0:end_idx]
+                        if clip_window <= 0:
+                            # Cumulative: all frames from start
+                            start_idx = 0
+                        else:
+                            # Fixed window: last K VLA steps worth of frames
+                            start_idx = max(0, end_idx - clip_window * action_chunks_len)
+                        clip_frames = frames[start_idx:end_idx]
                         if clip_frames:
                             all_clips.append((env_idx, t, clip_frames))
 

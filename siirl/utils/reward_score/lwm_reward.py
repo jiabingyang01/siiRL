@@ -65,6 +65,23 @@ def compute_lwm_reward(
     completes = batch_data["complete"].cpu().numpy().astype(bool)
     finish_steps = batch_data["finish_step"].cpu().numpy()
 
+    # Fallback: if LWM keys are missing (e.g. batch re-partitioned and stripped
+    # them), degrade to binary outcome reward instead of crashing.
+    required_keys = ["lwm_step_embeddings", "lwm_step_actions", "lwm_goal_embeddings"]
+    missing = [k for k in required_keys if k not in batch_data.keys()]
+    if missing:
+        logger.warning(f"[LWM-REWARD] Missing keys {missing}, falling back to binary outcome reward.")
+        results = []
+        for i in range(batch_size):
+            results.append({
+                "is_success": bool(completes[i]),
+                "score": 1.0 if completes[i] else 0.0,
+                "format_correctness": 1.0,
+                "step_rewards": [],
+                "progress_curve": [],
+            })
+        return results
+
     # Step-level embeddings: (num_envs, max_steps, embed_dim)
     step_embeddings = batch_data["lwm_step_embeddings"].cpu().numpy()
     # Step-level actions: (num_envs, max_steps, action_dim)

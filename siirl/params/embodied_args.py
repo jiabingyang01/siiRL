@@ -132,6 +132,12 @@ class EmbodiedArguments:
         default=0.99,
         metadata={"help": "Discount factor for policy-invariant reward shaping (PBRS)"}
     )
+    lwm_clip_window: int = field(
+        default=4,
+        metadata={"help": "Number of recent VLA steps to include in each clip. "
+                  "0 = cumulative window (all frames from start, slow). "
+                  "K > 0 = only last K VLA steps (fast, recommended). Default: 4."}
+    )
     lwm_success_threshold: float = field(
         default=0.05,
         metadata={"help": "Progress threshold for auto-detecting task success: Phi >= 1 - threshold"}
