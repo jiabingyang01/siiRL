@@ -139,3 +139,4 @@ docs/RUN_GUIDE_SRPO_LWM.md
 tb.sh
 examples/embodied_srpo_trainer/run_openvla_oft_libero_*.sh
 examples/lwm_reward_trainer/run_lwm_libero_*.sh
+ckpts/
