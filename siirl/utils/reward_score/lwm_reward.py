@@ -89,10 +89,11 @@ def compute_lwm_reward(
     # Goal embeddings: (num_envs, embed_dim)
     goal_embs = batch_data["lwm_goal_embeddings"].cpu().numpy()
 
+    max_steps = step_embeddings.shape[1]
     results = []
 
     for i in range(batch_size):
-        n_steps = int(finish_steps[i])
+        n_steps = min(int(finish_steps[i]), max_steps)
         if n_steps <= 0:
             results.append({
                 "is_success": bool(completes[i]),
