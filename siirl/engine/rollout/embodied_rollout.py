@@ -470,51 +470,64 @@ class EmbodiedHFRollout(BaseRollout):
             batch["vjepa_embedding"] = torch.tensor(
                 np.array(vjepa_embeddings), dtype=torch.float32)
 
-        # --- LWM-Reward: Compute per-step clip embeddings, actions, and goal embeddings ---
-        # This block only runs when lwm_reward_enabled=True. All SRPO data above remains unchanged.
+        # --- LWM-Reward: One unique latent state z_t per VLA step ---
+        # Design: each VLA step = 2 frames (first + last of its action chunk).
+        # V-JEPA 2 tubelet=2 collapses the 2 frames into 1 tubelet -> 1 token.
+        # So every VLA step gets its own distinct latent token z_t.
+        # For N VLA steps: feed 2N frames to V-JEPA, packed in chunks of 64 frames
+        # (32 VLA steps each). One V-JEPA forward handles 32 steps; longer
+        # trajectories use multiple forwards that are concatenated along time.
         if getattr(self.config.embodied, 'lwm_reward_enabled', False):
             with _timer("lwm_step_embeddings", timing_dict):
                 action_chunks_len = self.config.embodied.action_chunks_len
                 embed_dim = self.embedding_model.embedding_dim
                 num_vla_steps = len(vla_history)
+                VJEPA_FRAMES = 64
+                STEPS_PER_FORWARD = VJEPA_FRAMES // 2  # = 32
 
-                # --- 1. Per-step clip embeddings via V-JEPA 2 ---
                 step_embeddings = np.zeros((chunk_size, num_vla_steps, embed_dim), dtype=np.float32)
 
-                # Clip window strategy (controlled by lwm_clip_window):
-                #   0  -> cumulative window (all frames from start, quality best but slow)
-                #   K>0 -> fixed window (last K VLA steps = K*action_chunks_len frames, fast)
-                clip_window = int(getattr(self.config.embodied, 'lwm_clip_window', 4))
+                # --- Build per-VLA-step 2-frame packs for each trajectory ---
+                # Each trajectory -> list of 64-frame tensors (one per 32-step sub-batch)
+                trajectory_inputs = []  # list of (env_idx, sub_idx, start_step, n_steps_this_pack, tensor)
 
-                all_clips = []
                 for env_idx in range(chunk_size):
                     task_name = task_records[env_idx]['task_file_name']
                     frames = all_video.get(task_name, [])
                     n_steps = min(int(task_records[env_idx].get('finish_step', 0)), num_vla_steps)
-                    # frames layout: [init_frame(s), step0_chunk_frames, step1_chunk_frames, ...]
-                    init_n = max(1, len(frames) - n_steps * action_chunks_len) if n_steps > 0 else len(frames)
-                    for t in range(n_steps):
-                        end_idx = min(init_n + (t + 1) * action_chunks_len, len(frames))
-                        if clip_window <= 0:
-                            # Cumulative: all frames from start
-                            start_idx = 0
-                        else:
-                            # Fixed window: last K VLA steps worth of frames
-                            start_idx = max(0, end_idx - clip_window * action_chunks_len)
-                        clip_frames = frames[start_idx:end_idx]
-                        if clip_frames:
-                            all_clips.append((env_idx, t, clip_frames))
+                    if n_steps <= 0 or not frames:
+                        continue
+                    init_n = max(1, len(frames) - n_steps * action_chunks_len)
 
-                # Batch-encode clips (process in chunks of 16 to avoid OOM)
-                encode_batch = 16
-                for b_start in range(0, len(all_clips), encode_batch):
-                    b_end = min(b_start + encode_batch, len(all_clips))
-                    clip_batch = all_clips[b_start:b_end]
-                    clip_names = [f"clip_{c[0]}_{c[1]}" for c in clip_batch]
-                    clip_frames_list = [c[2] for c in clip_batch]
-                    clip_embs = self.embedding_model.get_embeddings(clip_names, clip_frames_list)
-                    for k, (ei, si, _) in enumerate(clip_batch):
-                        step_embeddings[ei, si] = clip_embs[k]
+                    # Always 2 frames per VLA step (first + last frame of action chunk)
+                    for sub_idx, start_step in enumerate(range(0, n_steps, STEPS_PER_FORWARD)):
+                        end_step = min(start_step + STEPS_PER_FORWARD, n_steps)
+                        n_steps_this = end_step - start_step
+                        picks = []
+                        for t in range(start_step, end_step):
+                            cs = init_n + t * action_chunks_len
+                            ce = min(init_n + (t + 1) * action_chunks_len, len(frames))
+                            f_first = frames[min(cs, len(frames) - 1)]
+                            f_last = frames[max(cs, ce - 1)] if ce > cs else f_first
+                            picks.append(f_first)
+                            picks.append(f_last)
+                        # Pad to 64 frames (extra tubelets will be discarded)
+                        while len(picks) < VJEPA_FRAMES:
+                            picks.append(picks[-1])
+                        tensor = torch.from_numpy(np.stack(picks)).permute(0, 3, 1, 2)
+                        trajectory_inputs.append((env_idx, start_step, n_steps_this, tensor))
+
+                # --- Batched V-JEPA forward ---
+                if trajectory_inputs:
+                    encode_batch = 8  # OOM-safe batch for ViT-G time-token extraction
+                    for b_start in range(0, len(trajectory_inputs), encode_batch):
+                        b_end = min(b_start + encode_batch, len(trajectory_inputs))
+                        tensors = [ti[3] for ti in trajectory_inputs[b_start:b_end]]
+                        time_tokens = self.embedding_model.extract_time_tokens_batch(tensors)
+                        # shape: (B, 32, D) — token[t] corresponds to VLA step (start_step + t)
+                        for k, (env_idx, start_step, n_steps_this, _) in enumerate(trajectory_inputs[b_start:b_end]):
+                            step_embeddings[env_idx, start_step:start_step + n_steps_this] = \
+                                time_tokens[k, :n_steps_this]
 
                 batch["lwm_step_embeddings"] = torch.tensor(step_embeddings, dtype=torch.float32)
 
@@ -573,7 +586,7 @@ class EmbodiedHFRollout(BaseRollout):
                         goal_embs[env_idx] = vjepa_embeddings[env_idx]
 
                 batch["lwm_goal_embeddings"] = torch.tensor(goal_embs, dtype=torch.float32)
-                logger.info(f"[LWM] steps={num_vla_steps}, clips={len(all_clips)}, "
+                logger.info(f"[LWM] steps={num_vla_steps}, forwards={len(trajectory_inputs) if 'trajectory_inputs' in locals() else 0}, "
                            f"goals: precomputed={n_precomputed}, batch_success={len(task_to_goal)}, "
                            f"total={chunk_size}")
 

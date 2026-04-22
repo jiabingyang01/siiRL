@@ -120,6 +120,41 @@ class VideoEmbeddingModel:
             with torch.amp.autocast('cuda', dtype=self.auto_cast_dtype):
                 embedding = self.model_pt(x)
             return [e.mean(dim=0).to(torch.float32).cpu().numpy() for e in embedding]
+
+    def extract_time_tokens_batch(self, video_tensor_list):
+        """
+        Extract time-preserved tokens (per-tubelet embeddings) for a batch of videos.
+
+        Unlike extract_video_embedding_batch which averages over ALL tokens (space+time),
+        this keeps the time dimension: for V-JEPA 2 with tubelet_size=2 and 64 input frames,
+        returns 32 time tokens per video, each obtained by spatial-only pooling.
+
+        This enables step-level reward computation with ONE V-JEPA forward per trajectory
+        (instead of N forwards for N-step trajectory).
+
+        Args:
+            video_tensor_list: list of video tensors, each shape (T, C, H, W) with T=64.
+        Returns:
+            np.ndarray of shape (B, n_time_tokens, D) where n_time_tokens = T // tubelet_size.
+        """
+        with torch.inference_mode():
+            input_list = [self.pt_video_transform(v.to(self.device)).to(self.device) for v in video_tensor_list]
+            x = torch.stack(input_list, dim=0)
+            B = x.shape[0]
+            with torch.amp.autocast('cuda', dtype=self.auto_cast_dtype):
+                # Output shape: (B, num_tokens, D) where num_tokens = T//tubelet * H//patch * W//patch
+                embedding = self.model_pt(x)
+            # Reshape tokens into (B, n_time, n_spatial, D) then pool spatially only
+            num_tokens = embedding.shape[1]
+            # T//tubelet = 64 // 2 = 32 for standard V-JEPA 2 input of 64 frames
+            n_time = self.num_frames_for_embedding // 2  # tubelet_size=2
+            n_spatial = num_tokens // n_time
+            assert n_time * n_spatial == num_tokens, (
+                f"Token count {num_tokens} not divisible by expected time dim {n_time}"
+            )
+            # (B, n_time, n_spatial, D) -> mean over n_spatial -> (B, n_time, D)
+            time_tokens = embedding.view(B, n_time, n_spatial, -1).mean(dim=2)
+            return time_tokens.to(torch.float32).cpu().numpy()
         
     def get_embeddings(self, batch_names, batch_frames):
         """
