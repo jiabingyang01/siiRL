@@ -50,8 +50,18 @@ def set_basic_config():
     )
     os.makedirs(SIIRL_LOG_DIRCTORY, exist_ok=True)
 
+    # Filename strategy:
+    #   - SIIRL_LOGGING_FILENAME already carries a launch-time stamp from the shell script
+    #     (e.g. "openvla_lwm_libero_spatial_20260423_025820_"), so we don't need loguru's
+    #     {time} placeholder. Using {time} would cause each subprocess to stamp its own
+    #     start hour, producing stray empty files when workers spawn across hour boundaries.
+    #   - All processes sharing one sink path is safe because enqueue=True serializes writes
+    #     within each process, and POSIX O_APPEND atomically handles concurrent <4KB writes
+    #     across processes.
+    base_log_name = SIIRL_LOGGING_FILENAME.rstrip("_") or "siirl"
+    sink_path = os.path.join(SIIRL_LOG_DIRCTORY, base_log_name + ".log")
     logger.add(
-        sink=os.path.join(SIIRL_LOG_DIRCTORY, SIIRL_LOGGING_FILENAME + "{time:YYYY-MM-DD-HH}.log"),
+        sink=sink_path,
         level=log_level,
         rotation="500 MB",
         retention="30 days",
